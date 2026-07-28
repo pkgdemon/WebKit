@@ -1,0 +1,40 @@
+{
+    additionalCFlags = "-DUSE_SYSTEM_MALLOC=1 -Ifreebsd-shims -ISource/bmalloc -ISource/WTF -ISource/JavaScriptCore/DerivedSources -DHAVE_LOCALTIME_R=1 -DHAVE_MMAP=1 -DHAVE_TM_GMTOFF=1 -DHAVE_TM_ZONE=1 -DHAVE_TIMEGM=1 -DHAVE_PTHREAD_NP_H=1 -DHAVE_MADV_FREE=1 -DHAVE_MADV_DONTNEED=1 -DHAVE_MAP_ALIGNED=1 -DHAVE_ERRNO_H=1 -DHAVE_LANGINFO_H=1 -DHAVE_REGEX_H=1 -DHAVE_SIGNAL_H=1 -DHAVE_SYS_PARAM_H=1 -DHAVE_SYS_TIME_H=1";
+    additionalCXXFlags = "-std=c++2b";
+    skippedSource = (
+        "bmalloc/ProcessCheck.mm",
+        "wtf/cocoa/AuditToken.mm",
+        "wtf/cocoa/MachSendRight.cpp",
+        "wtf/cocoa/MemoryFootprintCocoa.cpp",
+        "wtf/cocoa/MemoryPressureHandlerCocoa.mm",
+        "wtf/cocoa/ResourceUsageCocoa.cpp",
+        "wtf/darwin/LibraryPathDiagnostics.mm",
+        "wtf/cocoa/AutodrainedPool.cpp",
+        "wtf/cocoa/MainThreadCocoa.mm",
+        "wtf/cocoa/WorkQueueCocoa.cpp",
+        "wtf/cocoa/SpanCocoa.mm",
+        "wtf/cf/RunLoopCF.cpp",
+        "wtf/cf/SchedulePairCF.cpp",
+        "wtf/cocoa/SchedulePairCocoa.mm",
+        "wtf/cf/LanguageCF.cpp",
+        "wtf/cocoa/TimeZoneCocoa.cpp",
+        "wtf/cocoa/RuntimeApplicationChecksCocoa.mm",
+        "wtf/cf/CFURLExtras.cpp",
+        "wtf/cf/FileSystemCF.cpp",
+        "wtf/cf/URLCF.cpp",
+        "wtf/cocoa/UUIDCocoa.mm",
+        "wtf/text/cocoa/ContextualizedCFString.mm",
+        "wtf/cocoa/Entitlements.mm",
+        "wtf/cocoa/FileSystemCocoa.mm",
+        "wtf/cocoa/LanguageCocoa.mm",
+        "wtf/cocoa/NSURLExtras.mm",
+        "wtf/text/cocoa/StringCocoa.mm",
+        "wtf/text/cocoa/StringImplCocoa.mm",
+        "wtf/text/cocoa/TextBreakIteratorInternalICUCocoa.cpp",
+        "wtf/cocoa/URLCocoa.mm",
+        "wtf/cocoa/LoggingCocoa.mm",
+        "wtf/text/cocoa/TextStreamCocoa.mm",
+        "wtf/mac/MachExceptions.defs",
+        "wtf/wtf.swift"
+    );
+}
