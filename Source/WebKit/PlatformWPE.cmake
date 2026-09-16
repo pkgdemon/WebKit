@@ -671,6 +671,90 @@ if (ENABLE_WPE_QT_API)
         ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/qt6/qml/org/wpewebkit/qtwpe)
 endif ()
 
+if (ENABLE_WPE_GNUSTEP_API)
+    set(WPE_GNUSTEP_API_DIR ${WEBKIT_DIR}/UIProcess/API/wpe/gnustep)
+
+    list(APPEND WPE_GNUSTEP_API_INSTALLED_HEADERS
+        ${WPE_GNUSTEP_API_DIR}/WebKitGNUstep.h
+        ${WPE_GNUSTEP_API_DIR}/WebView.h
+    )
+
+    set(WPE_GNUSTEP_API_SOURCES
+        UIProcess/API/wpe/gnustep/GSWebRunLoop.mm
+        UIProcess/API/wpe/gnustep/WebView.mm
+    )
+
+    # CMake has no first-class Objective-C++ language on non-Apple platforms,
+    # so compile the .mm sources as C++ with the Objective-C++ front end.
+    set_source_files_properties(${WPE_GNUSTEP_API_SOURCES} PROPERTIES
+        LANGUAGE CXX
+        COMPILE_OPTIONS "-x;objective-c++"
+        SKIP_PRECOMPILE_HEADERS ON
+        SKIP_UNITY_BUILD_INCLUSION ON
+    )
+
+    # The framework binary is libWebKit.so so that GNUstep applications can use
+    # the conventional -lWebKit and #import <WebKit/WebKit.h>.
+    add_library(WPEGNUstep SHARED ${WPE_GNUSTEP_API_SOURCES})
+    set_target_properties(WPEGNUstep PROPERTIES
+        OUTPUT_NAME WebKit
+        CXX_VISIBILITY_PRESET default
+    )
+    target_include_directories(WPEGNUstep PRIVATE
+        $<TARGET_PROPERTY:WebKit,INCLUDE_DIRECTORIES>
+        ${JavaScriptCoreGLib_FRAMEWORK_HEADERS_DIR}
+        ${CMAKE_BINARY_DIR}
+        ${WPE_GNUSTEP_API_DIR}
+        ${FORWARDING_HEADERS_DIR}
+        ${FORWARDING_HEADERS_DIR}/wpe
+        ${WPE_INCLUDE_DIRS}
+    )
+    target_link_libraries(WPEGNUstep
+        PUBLIC
+            GNUstep::GUI
+        PRIVATE
+            GLib::GLib
+            GLib::Object
+            WebKit
+    )
+    target_compile_options(WPEGNUstep PRIVATE ${XKBCOMMON_CFLAGS})
+
+    # Lay out a GNUstep framework bundle:
+    #   WebKit.framework/Versions/0/{libWebKit.so,Headers,Resources}
+    # plus the Current symlink and the /System/Library/{Headers,Libraries}
+    # aliases that gnustep-make normally creates, so that -lWebKit and
+    # #import <WebKit/WebKit.h> resolve.
+    set(WPE_GNUSTEP_FRAMEWORK_VERSION 0)
+    set(WPE_GNUSTEP_FRAMEWORK_DIR
+        "${LIB_INSTALL_DIR}/../Frameworks/WebKit.framework")
+    set(WPE_GNUSTEP_FRAMEWORK_VERSION_DIR
+        "${WPE_GNUSTEP_FRAMEWORK_DIR}/Versions/${WPE_GNUSTEP_FRAMEWORK_VERSION}")
+
+    install(TARGETS WPEGNUstep
+        DESTINATION "${WPE_GNUSTEP_FRAMEWORK_VERSION_DIR}"
+    )
+    install(FILES ${WPE_GNUSTEP_API_INSTALLED_HEADERS}
+        DESTINATION "${WPE_GNUSTEP_FRAMEWORK_VERSION_DIR}/Headers"
+        COMPONENT "Development"
+    )
+    install(CODE "
+        set(fw \"\$ENV{DESTDIR}${WPE_GNUSTEP_FRAMEWORK_DIR}\")
+        file(MAKE_DIRECTORY \"\${fw}/Versions/${WPE_GNUSTEP_FRAMEWORK_VERSION}/Resources\")
+        execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink
+            ${WPE_GNUSTEP_FRAMEWORK_VERSION} \"\${fw}/Versions/Current\")
+        foreach (link Headers Resources libWebKit.so)
+            execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink
+                Versions/Current/\${link} \"\${fw}/\${link}\")
+        endforeach ()
+        execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink
+            ../Frameworks/WebKit.framework/Headers
+            \"\$ENV{DESTDIR}${LIB_INSTALL_DIR}/../Headers/WebKit\")
+        execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink
+            ../Frameworks/WebKit.framework/Versions/Current/libWebKit.so
+            \"\$ENV{DESTDIR}${LIB_INSTALL_DIR}/libWebKit.so\")
+    ")
+endif ()
+
 install(TARGETS WPEInjectedBundle
         DESTINATION "${LIB_INSTALL_DIR}/wpe-webkit-${WPE_API_VERSION}/injected-bundle"
 )
