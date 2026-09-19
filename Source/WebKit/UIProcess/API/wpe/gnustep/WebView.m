@@ -9,14 +9,14 @@
 NSString * const WebViewProgressStartedNotification  = @"WebViewProgressStartedNotification";
 NSString * const WebViewProgressFinishedNotification = @"WebViewProgressFinishedNotification";
 
-struct GSWebViewImpl {
+typedef struct GSWebViewImpl {
     WPEDisplay      *display;
     WebKitWebView   *webView;
     WPEView         *wpeView;
     NSBitmapImageRep *rep;      /* current frame, RGBA premultiplied */
     WebView         *owner;     /* unretained back-pointer */
     id               frameLoadDelegate;  /* unretained, per AppKit convention */
-};
+} GSWebViewImpl;
 
 #define IMPL ((GSWebViewImpl *)_impl)
 
@@ -475,7 +475,7 @@ static guint keysymForNSEvent(NSEvent *e)
 
 /* ---- JavaScript ---- */
 
-struct JSCallCtx { void (^handler)(NSString *, NSError *); };
+typedef struct JSCallCtx { void (^handler)(NSString *, NSError *); } JSCallCtx;
 
 static void onJSFinished(GObject *src, GAsyncResult *res, gpointer data)
 {
@@ -499,7 +499,7 @@ static void onJSFinished(GObject *src, GAsyncResult *res, gpointer data)
         g_object_unref(value);
     }
     Block_release(ctx->handler);
-    delete ctx;
+    free(ctx);
 }
 
 - (void)evaluateJavaScript:(NSString *)script
@@ -509,7 +509,7 @@ static void onJSFinished(GObject *src, GAsyncResult *res, gpointer data)
         if (handler) handler(nil, nil);
         return;
     }
-    JSCallCtx *ctx = new JSCallCtx;
+    JSCallCtx *ctx = malloc(sizeof(JSCallCtx));
     ctx->handler = Block_copy(handler);
     webkit_web_view_evaluate_javascript(IMPL->webView,
         [script UTF8String], -1, NULL, NULL, NULL, onJSFinished, ctx);

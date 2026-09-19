@@ -680,15 +680,17 @@ if (ENABLE_WPE_GNUSTEP_API)
     )
 
     set(WPE_GNUSTEP_API_SOURCES
-        UIProcess/API/wpe/gnustep/GSWebRunLoop.mm
-        UIProcess/API/wpe/gnustep/WebView.mm
+        UIProcess/API/wpe/gnustep/GSWebRunLoop.m
+        UIProcess/API/wpe/gnustep/WebView.m
     )
 
-    # CMake has no first-class Objective-C++ language on non-Apple platforms,
-    # so compile the .mm sources as C++ with the Objective-C++ front end.
+    # These sources only use the GLib C API, so compile them as plain
+    # Objective-C (C with the Objective-C front end) rather than Objective-C++.
+    # GNUstep's AppKit headers are not guaranteed to be valid C++; for example,
+    # NSImage.h declares a bitfield named "template".
     set_source_files_properties(${WPE_GNUSTEP_API_SOURCES} PROPERTIES
-        LANGUAGE CXX
-        COMPILE_OPTIONS "-x;objective-c++"
+        LANGUAGE C
+        COMPILE_OPTIONS "-x;objective-c"
         SKIP_PRECOMPILE_HEADERS ON
         SKIP_UNITY_BUILD_INCLUSION ON
     )
@@ -698,7 +700,7 @@ if (ENABLE_WPE_GNUSTEP_API)
     add_library(WPEGNUstep SHARED ${WPE_GNUSTEP_API_SOURCES})
     set_target_properties(WPEGNUstep PROPERTIES
         OUTPUT_NAME WebKit
-        CXX_VISIBILITY_PRESET default
+        C_VISIBILITY_PRESET default
     )
     target_include_directories(WPEGNUstep PRIVATE
         $<TARGET_PROPERTY:WebKit,INCLUDE_DIRECTORIES>
