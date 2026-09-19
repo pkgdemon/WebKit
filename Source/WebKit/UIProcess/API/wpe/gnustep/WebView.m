@@ -323,13 +323,30 @@ static void onProgressChanged(GObject *o, GParamSpec *p, gpointer data)
     [ctx restoreGraphicsState];
 }
 
-- (void)setFrameSize:(NSSize)size
+/* Keep the web content the same size as the view. Otherwise the frame is
+ * stretched to fit in -drawRect: while input stays in view coordinates, so
+ * clicks land away from what is drawn. */
+- (void)_resizeWebContent
 {
-    [super setFrameSize:size];
+    NSSize size = [self frame].size;
     if (IMPL && IMPL->wpeView && size.width > 0 && size.height > 0) {
         wpe_toplevel_resize(wpe_view_get_toplevel(IMPL->wpeView),
                             (int)size.width, (int)size.height);
     }
+}
+
+- (void)setFrameSize:(NSSize)size
+{
+    [super setFrameSize:size];
+    [self _resizeWebContent];
+}
+
+/* GNUstep's -setFrame: does not go through -setFrameSize:, and containers
+ * such as NSTabView size their views with it. */
+- (void)setFrame:(NSRect)frame
+{
+    [super setFrame:frame];
+    [self _resizeWebContent];
 }
 
 /* ---- Input ------------------------------------------------------------
