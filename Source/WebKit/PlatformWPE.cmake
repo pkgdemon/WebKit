@@ -681,6 +681,10 @@ if (ENABLE_WPE_GNUSTEP_API)
 
     set(WPE_GNUSTEP_API_SOURCES
         UIProcess/API/wpe/gnustep/GSWebRunLoop.m
+        UIProcess/API/wpe/gnustep/GSWebBackForwardList.m
+        UIProcess/API/wpe/gnustep/GSWebDataSource.m
+        UIProcess/API/wpe/gnustep/GSWebFrame.m
+        UIProcess/API/wpe/gnustep/GSWebPreferences.m
         UIProcess/API/wpe/gnustep/WebView.m
     )
 
@@ -737,6 +741,26 @@ if (ENABLE_WPE_GNUSTEP_API)
     )
     install(FILES ${WPE_GNUSTEP_API_INSTALLED_HEADERS}
         DESTINATION "${WPE_GNUSTEP_FRAMEWORK_VERSION_DIR}/Headers"
+        COMPONENT "Development"
+    )
+    install(FILES ${WPE_GNUSTEP_API_DIR}/GSWebDataSource.h
+        DESTINATION "${WPE_GNUSTEP_FRAMEWORK_VERSION_DIR}/Headers"
+        RENAME WebDataSource.h
+        COMPONENT "Development"
+    )
+    install(FILES ${WPE_GNUSTEP_API_DIR}/GSWebFrame.h
+        DESTINATION "${WPE_GNUSTEP_FRAMEWORK_VERSION_DIR}/Headers"
+        RENAME WebFrame.h
+        COMPONENT "Development"
+    )
+    install(FILES ${WPE_GNUSTEP_API_DIR}/GSWebPreferences.h
+        DESTINATION "${WPE_GNUSTEP_FRAMEWORK_VERSION_DIR}/Headers"
+        RENAME WebPreferences.h
+        COMPONENT "Development"
+    )
+    install(FILES ${WPE_GNUSTEP_API_DIR}/GSWebBackForwardList.h
+        DESTINATION "${WPE_GNUSTEP_FRAMEWORK_VERSION_DIR}/Headers"
+        RENAME WebBackForwardList.h
         COMPONENT "Development"
     )
     install(CODE "

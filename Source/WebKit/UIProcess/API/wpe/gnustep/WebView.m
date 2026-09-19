@@ -1,5 +1,8 @@
 #import "WebView.h"
 #import "GSWebRunLoop.h"
+#import "GSWebFrameInternal.h"
+#import "GSWebBackForwardListInternal.h"
+#import "GSWebPreferences.h"
 
 #include <wpe/webkit.h>
 #include <wpe/wpe-platform.h>
@@ -16,6 +19,11 @@ typedef struct GSWebViewImpl {
     NSBitmapImageRep *rep;      /* current frame, RGBA premultiplied */
     WebView         *owner;     /* unretained back-pointer */
     id               frameLoadDelegate;  /* unretained, per AppKit convention */
+    WebFrame        *mainFrame;
+    WebBackForwardList *backForwardList;
+    WebPreferences  *preferences;
+    NSString        *groupName;
+    id               uiDelegate;          /* unretained, per AppKit convention */
 } GSWebViewImpl;
 
 #define IMPL ((GSWebViewImpl *)_impl)
@@ -108,6 +116,9 @@ static void setUpPersistentCookieStorage(void)
 
 /* Private methods, declared so the C callbacks below can reference them. */
 @interface WebView (GSPrivate)
+- (void)_setUpWebView;
+- (void)_applyPreferences;
+- (WebView *)_createWebViewWithURI:(const char *)uri;
 - (void)_bufferRendered:(void *)bufferPtr;
 - (void)_loadChanged:(int)event;
 - (void)_loadFailed:(const char *)uri message:(const char *)msg;
@@ -142,6 +153,18 @@ static void onTitleChanged(GObject *o, GParamSpec *p, gpointer data)
     [(WebView *)data _titleChanged];
 }
 
+/* The page asked for a new window. Let the application make one; WebKit itself
+ * gets NULL, because the new view has its own web process and cannot be handed
+ * back to the opener. The request is loaded into the new view instead, so
+ * window.open() and target=_blank open the page but share no script context. */
+static WebKitWebView *onCreate(WebKitWebView *v, WebKitNavigationAction *action, gpointer data)
+{
+    (void)v;
+    WebKitURIRequest *request = action ? webkit_navigation_action_get_request(action) : NULL;
+    [(WebView *)data _createWebViewWithURI:(request ? webkit_uri_request_get_uri(request) : NULL)];
+    return NULL;
+}
+
 static void onProgressChanged(GObject *o, GParamSpec *p, gpointer data)
 {
     (void)o; (void)p;
@@ -155,6 +178,23 @@ static void onProgressChanged(GObject *o, GParamSpec *p, gpointer data)
     self = [super initWithFrame:frameRect];
     if (!self)
         return nil;
+    [self _setUpWebView];
+    return self;
+}
+
+/* Gorm and Interface Builder archives instantiate the view this way. */
+- (id)initWithCoder:(NSCoder *)coder
+{
+    self = [super initWithCoder:coder];
+    if (!self)
+        return nil;
+    [self _setUpWebView];
+    return self;
+}
+
+- (void)_setUpWebView
+{
+    NSRect frameRect = [self frame];
 
     [GSWebRunLoop start];
     setUpPersistentCookieStorage();
@@ -165,7 +205,7 @@ static void onProgressChanged(GObject *o, GParamSpec *p, gpointer data)
     IMPL->display = wpe_display_headless_new();
     if (!IMPL->display) {
         NSLog(@"WebView: failed to create WPE headless display");
-        return self;
+        return;
     }
     /* The headless display reports no input devices, so pages would see
      * (pointer: none) and (hover: none). This view is driven by AppKit's
@@ -178,7 +218,7 @@ static void onProgressChanged(GObject *o, GParamSpec *p, gpointer data)
     IMPL->wpeView = webkit_web_view_get_wpe_view(IMPL->webView);
     if (!IMPL->wpeView) {
         NSLog(@"WebView: failed to obtain WPEView");
-        return self;
+        return;
     }
 
     int w = (int)NSWidth(frameRect), h = (int)NSHeight(frameRect);
@@ -196,8 +236,14 @@ static void onProgressChanged(GObject *o, GParamSpec *p, gpointer data)
                      G_CALLBACK(onTitleChanged), self);
     g_signal_connect(IMPL->webView, "notify::estimated-load-progress",
                      G_CALLBACK(onProgressChanged), self);
+    g_signal_connect(IMPL->webView, "create",
+                     G_CALLBACK(onCreate), self);
 
-    return self;
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(_preferencesChanged:)
+                                                 name:WebPreferencesChangedNotification
+                                               object:nil];
+    [self _applyPreferences];
 }
 
 - (void)dealloc
@@ -207,7 +253,12 @@ static void onProgressChanged(GObject *o, GParamSpec *p, gpointer data)
             g_signal_handlers_disconnect_by_data(IMPL->webView, self);
         if (IMPL->wpeView)
             g_signal_handlers_disconnect_by_data(IMPL->wpeView, self);
+        [[NSNotificationCenter defaultCenter] removeObserver:self];
         [IMPL->rep release];
+        [IMPL->mainFrame release];
+        [IMPL->backForwardList release];
+        [IMPL->preferences release];
+        [IMPL->groupName release];
         if (IMPL->webView)
             g_object_unref(IMPL->webView);
         if (IMPL->display)
@@ -248,17 +299,17 @@ static void onProgressChanged(GObject *o, GParamSpec *p, gpointer data)
         [[NSNotificationCenter defaultCenter]
             postNotificationName:WebViewProgressStartedNotification object:self];
         if ([d respondsToSelector:@selector(webView:didStartProvisionalLoadForFrame:)])
-            [d webView:self didStartProvisionalLoadForFrame:nil];
+            [d webView:self didStartProvisionalLoadForFrame:[self mainFrame]];
         break;
     case WEBKIT_LOAD_COMMITTED:
         if ([d respondsToSelector:@selector(webView:didCommitLoadForFrame:)])
-            [d webView:self didCommitLoadForFrame:nil];
+            [d webView:self didCommitLoadForFrame:[self mainFrame]];
         break;
     case WEBKIT_LOAD_FINISHED:
         [[NSNotificationCenter defaultCenter]
             postNotificationName:WebViewProgressFinishedNotification object:self];
         if ([d respondsToSelector:@selector(webView:didFinishLoadForFrame:)])
-            [d webView:self didFinishLoadForFrame:nil];
+            [d webView:self didFinishLoadForFrame:[self mainFrame]];
         break;
     default:
         break;
@@ -273,7 +324,7 @@ static void onProgressChanged(GObject *o, GParamSpec *p, gpointer data)
             [NSString stringWithUTF8String:msg ?: "unknown"], NSLocalizedDescriptionKey,
             [NSString stringWithUTF8String:uri ?: ""], @"WebViewFailingURL", nil];
         NSError *err = [NSError errorWithDomain:@"WebKitErrorDomain" code:-1 userInfo:info];
-        [d webView:self didFailLoadWithError:err forFrame:nil];
+        [d webView:self didFailLoadWithError:err forFrame:[self mainFrame]];
     }
 }
 
@@ -281,7 +332,7 @@ static void onProgressChanged(GObject *o, GParamSpec *p, gpointer data)
 {
     id d = IMPL->frameLoadDelegate;
     if ([d respondsToSelector:@selector(webView:didReceiveTitle:forFrame:)])
-        [d webView:self didReceiveTitle:[self mainFrameTitle] forFrame:nil];
+        [d webView:self didReceiveTitle:[self mainFrameTitle] forFrame:[self mainFrame]];
 }
 
 - (void)_progressChanged
@@ -511,6 +562,15 @@ static guint keysymForNSEvent(NSEvent *e)
 
 /* ---- Navigation ---- */
 
+- (WebFrame *)mainFrame
+{
+    if (!IMPL)
+        return nil;
+    if (!IMPL->mainFrame)
+        IMPL->mainFrame = [[WebFrame alloc] _initWithWebView:self name:@""];
+    return IMPL->mainFrame;
+}
+
 - (void)setMainFrameURL:(NSString *)urlString
 {
     if (IMPL && IMPL->webView)
@@ -542,6 +602,31 @@ static guint keysymForNSEvent(NSEvent *e)
 - (void)stopLoading:(id)sender { (void)sender; if (IMPL->webView) webkit_web_view_stop_loading(IMPL->webView); }
 - (void)goBack:(id)sender      { (void)sender; if (IMPL->webView) webkit_web_view_go_back(IMPL->webView); }
 - (void)goForward:(id)sender   { (void)sender; if (IMPL->webView) webkit_web_view_go_forward(IMPL->webView); }
+/* Classic WebKit spellings: these return whether the move happened. */
+- (BOOL)goBack
+{
+    if (![self canGoBack])
+        return NO;
+    [self goBack:nil];
+    return YES;
+}
+
+- (BOOL)goForward
+{
+    if (![self canGoForward])
+        return NO;
+    [self goForward:nil];
+    return YES;
+}
+
+/* Target of a URL text field: load whatever it holds. */
+- (void)takeStringURLFrom:(id)sender
+{
+    NSString *url = [sender respondsToSelector:@selector(stringValue)] ? [sender stringValue] : nil;
+    if ([url length])
+        [self setMainFrameURL:url];
+}
+
 - (BOOL)canGoBack     { return IMPL->webView ? webkit_web_view_can_go_back(IMPL->webView) : NO; }
 - (BOOL)canGoForward  { return IMPL->webView ? webkit_web_view_can_go_forward(IMPL->webView) : NO; }
 - (BOOL)isLoading     { return IMPL->webView ? webkit_web_view_is_loading(IMPL->webView) : NO; }
@@ -568,14 +653,14 @@ static void onJSFinished(GObject *src, GAsyncResult *res, gpointer data)
                                             error ? error->message : "unknown"]
                                         forKey:NSLocalizedDescriptionKey]];
         if (error) g_error_free(error);
-        ctx->handler(nil, e);
+        if (ctx->handler) ctx->handler(nil, e);
     } else {
         char *str = jsc_value_to_string(value);
-        ctx->handler(str ? [NSString stringWithUTF8String:str] : @"", nil);
+        if (ctx->handler) ctx->handler(str ? [NSString stringWithUTF8String:str] : @"", nil);
         g_free(str);
         g_object_unref(value);
     }
-    Block_release(ctx->handler);
+    if (ctx->handler) Block_release(ctx->handler);
     free(ctx);
 }
 
@@ -586,8 +671,9 @@ static void onJSFinished(GObject *src, GAsyncResult *res, gpointer data)
         if (handler) handler(nil, nil);
         return;
     }
+    /* The completion handler is optional: scripts are often run for effect. */
     JSCallCtx *ctx = malloc(sizeof(JSCallCtx));
-    ctx->handler = Block_copy(handler);
+    ctx->handler = handler ? Block_copy(handler) : NULL;
     webkit_web_view_evaluate_javascript(IMPL->webView,
         [script UTF8String], -1, NULL, NULL, NULL, onJSFinished, ctx);
 }
@@ -597,9 +683,161 @@ static void onJSFinished(GObject *src, GAsyncResult *res, gpointer data)
     return (IMPL && IMPL->rep) ? [[IMPL->rep retain] autorelease] : nil;
 }
 
-/* ---- Delegate ---- */
+/* ---- Text zoom ---- */
+
+- (void)makeTextLarger:(id)sender
+{
+    (void)sender;
+    if (IMPL && IMPL->webView)
+        webkit_web_view_set_zoom_level(IMPL->webView, webkit_web_view_get_zoom_level(IMPL->webView) * 1.1);
+}
+
+- (void)makeTextSmaller:(id)sender
+{
+    (void)sender;
+    if (IMPL && IMPL->webView)
+        webkit_web_view_set_zoom_level(IMPL->webView, webkit_web_view_get_zoom_level(IMPL->webView) / 1.1);
+}
+
+- (void)makeTextStandardSize:(id)sender
+{
+    (void)sender;
+    if (IMPL && IMPL->webView)
+        webkit_web_view_set_zoom_level(IMPL->webView, 1.0);
+}
+
+/* ---- Preferences ---- */
+
+- (WebPreferences *)preferences
+{
+    if (!IMPL)
+        return nil;
+    if (!IMPL->preferences)
+        IMPL->preferences = [[WebPreferences standardPreferences] retain];
+    return IMPL->preferences;
+}
+
+- (void)setPreferences:(WebPreferences *)preferences
+{
+    if (!IMPL || IMPL->preferences == preferences)
+        return;
+    [IMPL->preferences release];
+    IMPL->preferences = [preferences retain];
+    [self _applyPreferences];
+}
+
+- (void)setPreferencesIdentifier:(NSString *)identifier
+{
+    WebPreferences *prefs = [[WebPreferences alloc] initWithIdentifier:identifier];
+    [self setPreferences:prefs];
+    [prefs release];
+}
+
+- (NSString *)preferencesIdentifier { return [[self preferences] identifier]; }
+
+- (void)_preferencesChanged:(NSNotification *)note
+{
+    if ([note object] == [self preferences])
+        [self _applyPreferences];
+}
+
+- (void)_applyPreferences
+{
+    if (!IMPL || !IMPL->webView)
+        return;
+    WebPreferences *p = [self preferences];
+    WebKitSettings *settings = webkit_web_view_get_settings(IMPL->webView);
+    g_object_set(settings,
+        "enable-javascript", [p isJavaScriptEnabled] ? TRUE : FALSE,
+        "auto-load-images", [p loadsImagesAutomatically] ? TRUE : FALSE,
+        "default-font-family", [[p standardFontFamily] UTF8String],
+        "serif-font-family", [[p serifFontFamily] UTF8String],
+        "sans-serif-font-family", [[p sansSerifFontFamily] UTF8String],
+        "monospace-font-family", [[p fixedFontFamily] UTF8String],
+        "default-font-size", (guint32)[p defaultFontSize],
+        "default-monospace-font-size", (guint32)[p defaultFixedFontSize],
+        "minimum-font-size", (guint32)[p minimumFontSize],
+        NULL);
+}
+
+/* ---- History ---- */
+
+- (WebBackForwardList *)backForwardList
+{
+    if (!IMPL)
+        return nil;
+    if (!IMPL->backForwardList)
+        IMPL->backForwardList = [[WebBackForwardList alloc] _initWithWebView:self];
+    return IMPL->backForwardList;
+}
+
+/* WPE always keeps a back/forward list. */
+- (void)setMaintainsBackForwardList:(BOOL)flag { (void)flag; }
+
+- (int)_backListCount
+{
+    if (!IMPL || !IMPL->webView)
+        return 0;
+    GList *list = webkit_back_forward_list_get_back_list(webkit_web_view_get_back_forward_list(IMPL->webView));
+    int count = (int)g_list_length(list);
+    g_list_free(list);
+    return count;
+}
+
+- (int)_forwardListCount
+{
+    if (!IMPL || !IMPL->webView)
+        return 0;
+    GList *list = webkit_back_forward_list_get_forward_list(webkit_web_view_get_back_forward_list(IMPL->webView));
+    int count = (int)g_list_length(list);
+    g_list_free(list);
+    return count;
+}
+
+- (void)setGroupName:(NSString *)groupName
+{
+    if (!IMPL)
+        return;
+    [IMPL->groupName release];
+    IMPL->groupName = [groupName copy];
+}
+
+- (NSString *)groupName { return IMPL ? IMPL->groupName : nil; }
+
+/* ---- New windows ---- */
+
+- (WebView *)_createWebViewWithURI:(const char *)uri
+{
+    id d = IMPL ? IMPL->uiDelegate : nil;
+    if (![d respondsToSelector:@selector(webView:createWebViewWithRequest:)])
+        return nil;
+
+    NSURLRequest *request = nil;
+    if (uri && *uri) {
+        NSURL *url = [NSURL URLWithString:[NSString stringWithUTF8String:uri]];
+        if (url)
+            request = [NSURLRequest requestWithURL:url];
+    }
+
+    WebView *created = [d webView:self createWebViewWithRequest:request];
+    if (!created)
+        return nil;
+
+    /* Apple's API loads the request into the returned view. Applications that
+     * load it themselves simply end up loading the same URL. */
+    if (request && ![[created mainFrameURL] length])
+        [[created mainFrame] loadRequest:request];
+
+    if ([d respondsToSelector:@selector(webViewShow:)])
+        [d webViewShow:created];
+    return created;
+}
+
+/* ---- Delegates ---- */
 
 - (void)setFrameLoadDelegate:(id)delegate { IMPL->frameLoadDelegate = delegate; }
 - (id)frameLoadDelegate                   { return IMPL->frameLoadDelegate; }
+- (void)setUIDelegate:(id)delegate        { IMPL->uiDelegate = delegate; }
+- (id)uiDelegate                          { return IMPL->uiDelegate; }
 
 @end

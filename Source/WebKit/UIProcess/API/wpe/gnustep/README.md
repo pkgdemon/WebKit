@@ -11,9 +11,21 @@ mirrors (`UIProcess/API/wpe/qt6`).
 
 | File | Purpose |
 |---|---|
-| `WebView.{h,mm}` | The AppKit-facing `NSView`. Owns a `WebKitWebView` on a headless `WPEDisplay`, converts each rendered frame into an `NSBitmapImageRep`, and translates `NSEvent` into `WPEEvent`. |
-| `GSWebRunLoop.{h,mm}` | Pumps the GLib default `GMainContext` from `NSRunLoop`. |
+| `WebView.{h,m}` | The AppKit-facing `NSView`. Owns a `WebKitWebView` on a headless `WPEDisplay`, converts each rendered frame into an `NSBitmapImageRep`, and translates `NSEvent` into `WPEEvent`. |
+| `GSWebRunLoop.{h,m}` | Pumps the GLib default `GMainContext` from `NSRunLoop`. |
+| `GSWebFrame.{h,m}` | `WebFrame`: the main frame, installed as `<WebKit/WebFrame.h>`. |
+| `GSWebPreferences.{h,m}` | `WebPreferences`: settings shared by identifier, installed as `<WebKit/WebPreferences.h>`. |
+| `GSWebBackForwardList.{h,m}` | `WebBackForwardList`, installed as `<WebKit/WebBackForwardList.h>`. |
 | `WebKitGNUstep.h` | Umbrella header. |
+
+The `GS` prefixes exist only because WebKit already has internal headers named
+`WebFrame.h`, `WebPreferences.h` and `WebBackForwardList.h`; the classes and the
+installed headers use the classic WebKit names, so applications written against
+Apple's API compile unchanged.
+
+The sources are plain Objective-C, not Objective-C++: GNUstep's AppKit headers
+are not guaranteed to be valid C++ (`NSImage.h` declares a bitfield named
+`template`), and the WPE API used here is C.
 
 ## Design notes
 

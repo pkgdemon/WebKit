@@ -26,6 +26,10 @@
 #ifndef WebKitGNUstep_h
 #define WebKitGNUstep_h
 
+#import <WebKit/WebBackForwardList.h>
+#import <WebKit/WebDataSource.h>
+#import <WebKit/WebFrame.h>
+#import <WebKit/WebPreferences.h>
 #import <WebKit/WebView.h>
 
 #endif /* WebKitGNUstep_h */
