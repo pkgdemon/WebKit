@@ -65,6 +65,47 @@ static NSBitmapImageRep *repFromSHM(WPEBufferSHM *shm, int w, int h)
     return rep;
 }
 
+/* ---- Cookie storage ----------------------------------------------------
+ * WebKit keeps cookies only in memory unless told where to store them, so
+ * every launch would look like a new browser to websites. Persist them per
+ * application at <user Library>/WebKit/<bundle id or process name>/, mirroring
+ * Apple's ~/Library/WebKit/<bundle id>/. The Library directory comes from the
+ * active GNUstep filesystem layout rather than a hardcoded path.
+ */
+static void setUpPersistentCookieStorage(void)
+{
+    static BOOL done = NO;
+    if (done)
+        return;
+    done = YES;
+
+    NSArray *dirs = NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES);
+    if (![dirs count])
+        return;
+    NSString *app = [[NSBundle mainBundle] bundleIdentifier];
+    if (![app length])
+        app = [[NSProcessInfo processInfo] processName];
+    NSString *dir = [[[dirs objectAtIndex:0] stringByAppendingPathComponent:@"WebKit"]
+                                             stringByAppendingPathComponent:app];
+
+    /* Cookies hold login sessions, so keep the directory private. */
+    NSDictionary *attrs = [NSDictionary dictionaryWithObject:[NSNumber numberWithShort:0700]
+                                                      forKey:NSFilePosixPermissions];
+    NSError *error = nil;
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:dir
+                                   withIntermediateDirectories:YES
+                                                    attributes:attrs
+                                                         error:&error]) {
+        NSLog(@"WebView: cannot create cookie directory %@: %@", dir, error);
+        return;
+    }
+
+    WebKitCookieManager *cookies = webkit_network_session_get_cookie_manager(webkit_network_session_get_default());
+    webkit_cookie_manager_set_persistent_storage(cookies,
+        [[dir stringByAppendingPathComponent:@"Cookies.sqlite"] fileSystemRepresentation],
+        WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
+}
+
 /* Private methods, declared so the C callbacks below can reference them. */
 @interface WebView (GSPrivate)
 - (void)_bufferRendered:(void *)bufferPtr;
@@ -116,6 +157,7 @@ static void onProgressChanged(GObject *o, GParamSpec *p, gpointer data)
         return nil;
 
     [GSWebRunLoop start];
+    setUpPersistentCookieStorage();
 
     _impl = calloc(1, sizeof(GSWebViewImpl));
     IMPL->owner = self;
@@ -125,6 +167,11 @@ static void onProgressChanged(GObject *o, GParamSpec *p, gpointer data)
         NSLog(@"WebView: failed to create WPE headless display");
         return self;
     }
+    /* The headless display reports no input devices, so pages would see
+     * (pointer: none) and (hover: none). This view is driven by AppKit's
+     * mouse and keyboard. */
+    wpe_display_set_available_input_devices(IMPL->display,
+        (WPEAvailableInputDevices)(WPE_AVAILABLE_INPUT_DEVICE_MOUSE | WPE_AVAILABLE_INPUT_DEVICE_KEYBOARD));
 
     IMPL->webView = WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW,
                                                 "display", IMPL->display, NULL));
@@ -299,6 +346,19 @@ static WPEModifiers modifiersFromNSEvent(NSEvent *e)
     if (f & NSAlternateKeyMask) m |= WPE_MODIFIER_KEYBOARD_ALT;
     if (f & NSCommandKeyMask)  m |= WPE_MODIFIER_KEYBOARD_META;
     if (f & NSAlphaShiftKeyMask) m |= WPE_MODIFIER_KEYBOARD_CAPS_LOCK;
+    /* WebKit reads which buttons are held from the modifiers. Like the Wayland
+     * backend, include the button on press and while dragging, and drop it on
+     * release; otherwise pages see buttons == 0 and drags (sliders, text
+     * selection) do nothing. */
+    switch ([e type]) {
+    case NSLeftMouseDown:
+    case NSLeftMouseDragged:  m |= WPE_MODIFIER_POINTER_BUTTON1; break;
+    case NSOtherMouseDown:
+    case NSOtherMouseDragged: m |= WPE_MODIFIER_POINTER_BUTTON2; break;
+    case NSRightMouseDown:
+    case NSRightMouseDragged: m |= WPE_MODIFIER_POINTER_BUTTON3; break;
+    default: break;
+    }
     return (WPEModifiers)m;
 }
 
