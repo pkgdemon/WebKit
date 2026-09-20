@@ -683,6 +683,99 @@ static void onJSFinished(GObject *src, GAsyncResult *res, gpointer data)
     return (IMPL && IMPL->rep) ? [[IMPL->rep retain] autorelease] : nil;
 }
 
+/* ---- Editing and the pasteboard ------------------------------------------
+ * WPE has its own clipboard, which on a headless display is not connected to
+ * anything the rest of the desktop can see, so the selection is moved through
+ * AppKit's general pasteboard instead: -copy:/-cut: read the page's selection
+ * and write it there, -paste: inserts the pasteboard's text into the page.
+ */
+
+- (NSString *)selectedText
+{
+    __block NSString *text = nil;
+    __block BOOL done = NO;
+
+    if (!IMPL || !IMPL->webView)
+        return @"";
+
+    [self evaluateJavaScript:@"window.getSelection ? String(window.getSelection()) : ''"
+           completionHandler:^(NSString *result, NSError *error) {
+        (void)error;
+        text = [result copy];
+        done = YES;
+    }];
+
+    /* The web process replies on the GLib loop, which GSWebRunLoop pumps from
+     * this run loop, so wait briefly rather than returning nothing. */
+    NSDate *until = [NSDate dateWithTimeIntervalSinceNow:1.0];
+    while (!done && [until timeIntervalSinceNow] > 0) {
+        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                                 beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    }
+    return text ? [text autorelease] : @"";
+}
+
+- (void)_putSelectionOnPasteboard
+{
+    NSString *text = [self selectedText];
+
+    if (![text length])
+        return;
+    NSPasteboard *pb = [NSPasteboard generalPasteboard];
+    [pb declareTypes:[NSArray arrayWithObject:NSStringPboardType] owner:nil];
+    [pb setString:text forType:NSStringPboardType];
+}
+
+- (void)copy:(id)sender
+{
+    (void)sender;
+    if (!IMPL || !IMPL->webView)
+        return;
+    [self _putSelectionOnPasteboard];
+    webkit_web_view_execute_editing_command(IMPL->webView, WEBKIT_EDITING_COMMAND_COPY);
+}
+
+- (void)cut:(id)sender
+{
+    (void)sender;
+    if (!IMPL || !IMPL->webView)
+        return;
+    [self _putSelectionOnPasteboard];
+    webkit_web_view_execute_editing_command(IMPL->webView, WEBKIT_EDITING_COMMAND_CUT);
+}
+
+- (void)paste:(id)sender
+{
+    (void)sender;
+    if (!IMPL || !IMPL->webView)
+        return;
+
+    NSString *text = [[NSPasteboard generalPasteboard] stringForType:NSStringPboardType];
+    if ([text length]) {
+        /* Insert the pasteboard's own text: WPE's clipboard is separate from
+         * AppKit's, so WEBKIT_EDITING_COMMAND_PASTE alone would paste whatever
+         * was last copied inside the page. */
+        webkit_web_view_execute_editing_command_with_argument(IMPL->webView,
+            "InsertText", [text UTF8String]);
+    } else {
+        webkit_web_view_execute_editing_command(IMPL->webView, WEBKIT_EDITING_COMMAND_PASTE);
+    }
+}
+
+- (void)selectAll:(id)sender
+{
+    (void)sender;
+    if (IMPL && IMPL->webView)
+        webkit_web_view_execute_editing_command(IMPL->webView, WEBKIT_EDITING_COMMAND_SELECT_ALL);
+}
+
+- (void)delete:(id)sender
+{
+    (void)sender;
+    if (IMPL && IMPL->webView)
+        webkit_web_view_execute_editing_command(IMPL->webView, "Delete");
+}
+
 /* ---- Text zoom ---- */
 
 - (void)makeTextLarger:(id)sender

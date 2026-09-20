@@ -66,6 +66,17 @@ extern NSString * const WebViewProgressFinishedNotification;
  * Useful for snapshots and for tests. */
 - (NSBitmapImageRep *)currentFrameImageRep;
 
+/* Editing. The page and the AppKit pasteboard are kept in step: copy and cut
+ * put the selection on the general pasteboard, and paste inserts what is on
+ * it into the page. Menu items sending these to the first responder work
+ * without the application doing anything. */
+- (void)copy:(id)sender;
+- (void)cut:(id)sender;
+- (void)paste:(id)sender;
+- (void)selectAll:(id)sender;
+- (void)delete:(id)sender;
+- (NSString *)selectedText;   /* empty when nothing is selected */
+
 /* Text zoom */
 - (void)makeTextLarger:(id)sender;
 - (void)makeTextSmaller:(id)sender;
