@@ -24,6 +24,10 @@ typedef struct GSWebViewImpl {
     WebPreferences  *preferences;
     NSString        *groupName;
     id               uiDelegate;          /* unretained, per AppKit convention */
+    WPEClipboard    *clipboard;           /* owned by the display */
+    gint64           lastWPEClipboardCount;
+    NSInteger        lastPasteboardCount;
+    NSTimer         *clipboardTimer;      /* keeps the two clipboards in step */
 } GSWebViewImpl;
 
 #define IMPL ((GSWebViewImpl *)_impl)
@@ -118,6 +122,7 @@ static void setUpPersistentCookieStorage(void)
 @interface WebView (GSPrivate)
 - (void)_setUpWebView;
 - (void)_applyPreferences;
+- (void)_syncClipboard:(NSTimer *)timer;
 - (WebView *)_createWebViewWithURI:(const char *)uri;
 - (void)_bufferRendered:(void *)bufferPtr;
 - (void)_loadChanged:(int)event;
@@ -239,6 +244,22 @@ static void onProgressChanged(GObject *o, GParamSpec *p, gpointer data)
     g_signal_connect(IMPL->webView, "create",
                      G_CALLBACK(onCreate), self);
 
+    /* Web pages have their own clipboard in WPE, which nothing else on the
+     * desktop can see. Mirror it to and from AppKit's general pasteboard so a
+     * page's own copy buttons, and pasting into a page, work. */
+    /* WebKit's pasteboard proxy uses the primary display's clipboard, which is
+     * not always this view's display, so watch that one. */
+    IMPL->clipboard = wpe_display_get_clipboard(wpe_display_get_primary() ?: IMPL->display);
+    if (IMPL->clipboard) {
+        IMPL->lastWPEClipboardCount = wpe_clipboard_get_change_count(IMPL->clipboard);
+        IMPL->lastPasteboardCount = [[NSPasteboard generalPasteboard] changeCount];
+        IMPL->clipboardTimer = [[NSTimer scheduledTimerWithTimeInterval:0.25
+                                                                 target:self
+                                                               selector:@selector(_syncClipboard:)
+                                                               userInfo:nil
+                                                                repeats:YES] retain];
+    }
+
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(_preferencesChanged:)
                                                  name:WebPreferencesChangedNotification
@@ -259,6 +280,8 @@ static void onProgressChanged(GObject *o, GParamSpec *p, gpointer data)
         [IMPL->backForwardList release];
         [IMPL->preferences release];
         [IMPL->groupName release];
+        [IMPL->clipboardTimer invalidate];
+        [IMPL->clipboardTimer release];
         if (IMPL->webView)
             g_object_unref(IMPL->webView);
         if (IMPL->display)
@@ -774,6 +797,63 @@ static void onJSFinished(GObject *src, GAsyncResult *res, gpointer data)
     (void)sender;
     if (IMPL && IMPL->webView)
         webkit_web_view_execute_editing_command(IMPL->webView, "Delete");
+}
+
+/* Copy what a page put on WPE's clipboard to the general pasteboard, and what
+ * other applications put on the pasteboard back to the page's clipboard. Only
+ * one direction runs per tick, so the two cannot chase each other. */
+- (void)_syncClipboard:(NSTimer *)timer
+{
+    (void)timer;
+    if (!IMPL || !IMPL->clipboard)
+        return;
+
+    NSPasteboard *pb = [NSPasteboard generalPasteboard];
+    gint64 wpeCount = wpe_clipboard_get_change_count(IMPL->clipboard);
+
+    if (wpeCount != IMPL->lastWPEClipboardCount) {
+        IMPL->lastWPEClipboardCount = wpeCount;
+
+        /* Content set by a page in this process is held locally, where
+         * wpe_clipboard_read_text() does not see it, so ask for the content
+         * object first and only then fall back to reading a format. */
+        NSString *text = nil;
+        WPEClipboardContent *content = wpe_clipboard_get_content(IMPL->clipboard);
+        const char *local = content ? wpe_clipboard_content_get_text(content) : NULL;
+        char *readBack = NULL;
+
+        if (local && *local)
+            text = [NSString stringWithUTF8String:local];
+        else {
+            readBack = wpe_clipboard_read_text(IMPL->clipboard, "text/plain;charset=utf-8", NULL);
+            if (!readBack)
+                readBack = wpe_clipboard_read_text(IMPL->clipboard, "text/plain", NULL);
+            if (readBack && *readBack)
+                text = [NSString stringWithUTF8String:readBack];
+        }
+
+        if ([text length]) {
+            [pb declareTypes:[NSArray arrayWithObject:NSStringPboardType] owner:nil];
+            [pb setString:text forType:NSStringPboardType];
+            IMPL->lastPasteboardCount = [pb changeCount];
+        }
+        if (readBack)
+            g_free(readBack);
+        return;
+    }
+
+    NSInteger pbCount = [pb changeCount];
+    if (pbCount != IMPL->lastPasteboardCount) {
+        IMPL->lastPasteboardCount = pbCount;
+        NSString *text = [pb stringForType:NSStringPboardType];
+        if ([text length]) {
+            WPEClipboardContent *content = wpe_clipboard_content_new();
+            wpe_clipboard_content_set_text(content, [text UTF8String]);
+            wpe_clipboard_set_content(IMPL->clipboard, content);
+            wpe_clipboard_content_unref(content);
+            IMPL->lastWPEClipboardCount = wpe_clipboard_get_change_count(IMPL->clipboard);
+        }
+    }
 }
 
 /* ---- Text zoom ---- */
